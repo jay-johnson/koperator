@@ -1,3 +1,25 @@
+# 2022-09-08 testing notes
+# the externalListeners NodePort services are getting created+deleted every 10ish seconds
+# moved the external NodePort to a named kubectl service
+# this will likely be fixed in the future or it could be something wrong in my configuration
+# like 'headless enabled' + 'externalListeners' is not supported too.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ext
+  labels:
+    app: kafka
+spec:
+  type: NodePort
+  selector:
+    kafka_cr: kafka
+  ports:
+    - name: http-kafka-ext
+      port: 29092
+      protocol: TCP
+      targetPort: 29092
+      nodePort: 32000
+---
 apiVersion: kafka.banzaicloud.io/v1beta1
 kind: KafkaCluster
 metadata:
@@ -23,6 +45,7 @@ spec:
           pvcSpec:
             accessModes:
               - ReadWriteOnce
+            # storageClassName: standard
             resources:
               requests:
                 storage: 10Gi
@@ -39,37 +62,47 @@ spec:
   rollingUpgradeConfig:
     failureThreshold: 1
   listenersConfig:
-    externalListeners:
-      - type: "plaintext"
-        name: "external" # name of the external listener. Must be unique per Kafka cluster
-        containerPort: 9094
-        accessMethod: NodePort # use NodePort service to expose Kafka broker outside the Kubernetes cluster
-
-        # the starting port must fall into the range allocated for nodeports on the Kubernetes cluster
-        # which is specified through --service-node-port-range (see https://kubernetes.io/docs/concepts/services-networking/service/#nodeport)
-        externalStartingPort: 32000
-
-        # annotations to apply to the created NodePort services
-        serviceAnnotations:
-          my.annotation: "my.value"
-
-        # if specified that the broker instead of node public IP (see "brokerConfig.nodePortExternalIP")
-        #	is advertised on the address having the following format: <kafka-cluster-name>-<broker-id>.<namespace><value-specified-in-hostnameOverride-field>
-        hostnameOverride: ".my.internal.domain" # brokers will be advertised as kafka-<broker-id>.<namespace>.my.internal.domain (e.g. kafka-0.kafka.my.internal.domain)
-
-        externalTrafficPolicy: "Local" # either Local or Cluster. If omitted defaults to Cluster.
-
+    # disabled after hitting the svc recreation issue
+    # externalListeners:
+    #   - type: "ssl"
+    #     name: "external" # name of the external listener. Must be unique per Kafka cluster
+    #    containerPort: 9094
+    #    accessMethod: NodePort # use NodePort service to expose Kafka broker outside the Kubernetes cluster
+    # 
+    #    # the starting port must fall into the range allocated for nodeports on the Kubernetes cluster
+    #    # which is specified through --service-node-port-range (see https://kubernetes.io/docs/concepts/services-networking/service/#nodeport)
+    #    externalStartingPort: 32000
+    # 
+    #    # annotations to apply to the created NodePort services
+    #    serviceAnnotations:
+    #      my.annotation: "kafka.dev.ssl"
+    # 
+    #    # if specified that the broker instead of node public IP (see "brokerConfig.nodePortExternalIP")
+    #    #	is advertised on the address having the following format: <kafka-cluster-name>-<broker-id>.<namespace><value-specified-in-hostnameOverride-field>
+    #    hostnameOverride: ".svc.cluster.local" # brokers will be advertised as kafka-<broker-id>.<namespace>.my.internal.domain (e.g. kafka-0.kafka.my.internal.domain)
+    # 
+    #    externalTrafficPolicy: "Local" # either Local or Cluster. If omitted defaults to Cluster.
+    # 
     internalListeners:
-      - type: "plaintext"
+      - type: "ssl"
         name: "internal"
         containerPort: 29092
         usedForInnerBrokerCommunication: true
-      - type: "plaintext"
+      - type: "ssl"
         name: "controller"
         containerPort: 29093
         usedForInnerBrokerCommunication: false
         usedForControllerCommunication: true
+    # must have fields: caCert and caKey
+    # https://banzaicloud.com/docs/supertubes/kafka-operator/ssl/#using-auto-generated-certificates-sslsecrets
+    sslSecrets:
+      tlsSecretName: "tls-kafka-server"
+      jksPasswordName: ""
+      # if you set 'create: false' then the tls-kafka-server
+      # kube secret must be created outside of this yaml
+      create: true
   cruiseControlConfig:
+    # increased after hitting OOMKilled - 2022-09-07
     resourceRequirements:
       limits:
         cpu: 3000m
