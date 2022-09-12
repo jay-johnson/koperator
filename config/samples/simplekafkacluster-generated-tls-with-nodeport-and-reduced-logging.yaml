@@ -1,36 +1,27 @@
-# 2022-09-08 testing notes
-# the externalListeners NodePort services are getting created+deleted every 10ish seconds
-# moved the external NodePort to a named kubectl service
-# this will likely be fixed in the future or it could be something wrong in my configuration
-# like 'headless enabled' + 'externalListeners' is not supported too.
-apiVersion: v1
-kind: Service
-metadata:
-  name: kafka-ext
-  labels:
-    app: kafka
-spec:
-  type: NodePort
-  selector:
-    kafka_cr: kafka
-  ports:
-    - name: http-kafka-ext
-      port: 29092
-      protocol: TCP
-      targetPort: 29092
-      nodePort: 32000
----
+#
+# delete previously created tls assets:
+# kubectl delete secret -n dev dev-kafka-controller dev-kafka-server-certificate
+#
+# verify certs
+# kubectl exec -n dev -it $(kubectl get po -n dev | grep dev-kafka-0-) -- bash -c 'echo "test" | openssl s_client -connect 0.0.0.0:29092 -key /run/secrets/java.io/keystores/client/tls.key -cert /run/secrets/java.io/keystores/client/tls.crt -CAfile /run/secrets/java.io/keystores/client/ca.crt -verify_return_error && echo "ssl worked"'
+#
+# kubectl get secret -n dev -o yaml dev-kafka-server-certificate | grep tls.key | awk '{print $NF}' | base64 -d > tls.key
+# kubectl get secret -n dev -o yaml dev-kafka-server-certificate | grep tls.crt | awk '{print $NF}' | base64 -d > tls.crt
+# kubectl get secret -n dev -o yaml dev-kafka-server-certificate | grep ca.crt | awk '{print $NF}' | base64 -d > ca.crt
+# openssl s_client -connect dev-kafka-all-broker.dev.svc.cluster.local:32000 -key ./tls.key -cert ./tls.crt -CAfile ./ca.crt -verify_return_error
+# openssl s_client -connect dev-kafka-all-broker.dev.svc.cluster.local:32001 -key ./tls.key -cert ./tls.crt -CAfile ./ca.crt -verify_return_error
+# openssl s_client -connect dev-kafka-all-broker.dev.svc.cluster.local:32002 -key ./tls.key -cert ./tls.crt -CAfile ./ca.crt -verify_return_error
+#
 apiVersion: kafka.banzaicloud.io/v1beta1
 kind: KafkaCluster
 metadata:
   labels:
     controller-tools.k8s.io: "1.0"
-  name: kafka
+  name: dev-kafka
 spec:
-  headlessServiceEnabled: true
+  headlessServiceEnabled: false
   zkAddresses:
-    - "zookeeper-client.zookeeper:2181"
-  propagateLabels: false
+  - "zookeeper-client.zookeeper:2181"
   oneBrokerPerNode: false
   clusterImage: "ghcr.io/banzaicloud/kafka:2.13-3.1.0"
   readOnlyConfig: |
@@ -38,83 +29,91 @@ spec:
     cruise.control.metrics.topic.auto.create=true
     cruise.control.metrics.topic.num.partitions=1
     cruise.control.metrics.topic.replication.factor=2
-  brokerConfigGroups:
-    default:
-      storageConfigs:
-        - mountPath: "/kafka-logs"
-          pvcSpec:
-            accessModes:
-              - ReadWriteOnce
-            # storageClassName: standard
-            resources:
-              requests:
-                storage: 10Gi
-      brokerAnnotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9020"
+    # https://hevodata.com/learn/apache-kafka-logs-a-comprehensive-guide/#enable
+    # Enable both file and kafka based logging
+    log4j.rootLogger=INFO, file, kafka
+    log4j.appender.kafka=com.cloudera.kafka.log4jappender.KafkaLog4jAppender
+    # log4j.appender.kafka.topic=flink.logs
+    # log4j.appender.kafka.brokerList=<broker_host>:9092
+    # Log layout configuration
+    log4j.appender.kafka.layout=net.logstash.log4j.JSONEventLayoutV1
+    log4j.appender.kafka.layout.UserFields=yarnContainerId:${yarnContainerId}
   brokers:
     - id: 0
-      brokerConfigGroup: "default"
+      brokerConfig:
+        storageConfigs:
+          - mountPath: "/kafka-logs"
+            pvcSpec:
+              # storageClassName: custom-storage-classname-here
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 10Gi
     - id: 1
-      brokerConfigGroup: "default"
+      brokerConfig:
+        storageConfigs:
+          - mountPath: "/kafka-logs"
+            pvcSpec:
+              # storageClassName: custom-storage-classname-here
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 10Gi
     - id: 2
-      brokerConfigGroup: "default"
+      brokerConfig:
+        storageConfigs:
+          - mountPath: "/kafka-logs"
+            pvcSpec:
+              # storageClassName: custom-storage-classname-here
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 10Gi
   rollingUpgradeConfig:
     failureThreshold: 1
   listenersConfig:
-    # disabled after hitting the svc recreation issue
-    # externalListeners:
-    #   - type: "ssl"
-    #     name: "external" # name of the external listener. Must be unique per Kafka cluster
-    #    containerPort: 9094
-    #    accessMethod: NodePort # use NodePort service to expose Kafka broker outside the Kubernetes cluster
-    # 
-    #    # the starting port must fall into the range allocated for nodeports on the Kubernetes cluster
-    #    # which is specified through --service-node-port-range (see https://kubernetes.io/docs/concepts/services-networking/service/#nodeport)
-    #    externalStartingPort: 32000
-    # 
-    #    # annotations to apply to the created NodePort services
-    #    serviceAnnotations:
-    #      my.annotation: "kafka.dev.ssl"
-    # 
-    #    # if specified that the broker instead of node public IP (see "brokerConfig.nodePortExternalIP")
-    #    #	is advertised on the address having the following format: <kafka-cluster-name>-<broker-id>.<namespace><value-specified-in-hostnameOverride-field>
-    #    hostnameOverride: ".svc.cluster.local" # brokers will be advertised as kafka-<broker-id>.<namespace>.my.internal.domain (e.g. kafka-0.kafka.my.internal.domain)
-    # 
-    #    externalTrafficPolicy: "Local" # either Local or Cluster. If omitted defaults to Cluster.
-    # 
+    externalListeners:
+      - type: "ssl"
+        name: "external"
+        externalStartingPort: 32000
+        containerPort: 9094
+        accessMethod: NodePort
+        # annotations to apply to the created NodePort services
+        serviceAnnotations:
+          my.annotation: "dev.example.com"
+        # if specified that the broker instead of node public IP (see "brokerConfig.nodePortExternalIP")
+        #	is advertised on the address having the following format: <kafka-cluster-name>-<broker-id>.<namespace><value-specified-in-hostnameOverride-field>
+        hostnameOverride: ".example.com" # brokers will be advertised as kafka-<broker-id>.<namespace>.my.internal.domain (e.g. kafka-0.kafka.my.internal.domain)
+        externalTrafficPolicy: "Local" # either Local or Cluster. If omitted defaults to Cluster.
     internalListeners:
-      - type: "ssl"
-        name: "internal"
+      - name: "inner"
         containerPort: 29092
+        type: "ssl"
         usedForInnerBrokerCommunication: true
-      - type: "ssl"
-        name: "controller"
+      - name: "controller"
         containerPort: 29093
+        type: "ssl"
         usedForInnerBrokerCommunication: false
         usedForControllerCommunication: true
-    # must have fields: caCert and caKey
-    # https://banzaicloud.com/docs/supertubes/kafka-operator/ssl/#using-auto-generated-certificates-sslsecrets
+      - name: "internal"
+        containerPort: 29094
+        type: "ssl"
+        usedForInnerBrokerCommunication: false
     sslSecrets:
-      tlsSecretName: "tls-kafka-server"
-      jksPasswordName: ""
-      # if you set 'create: false' then the tls-kafka-server
-      # kube secret must be created outside of this yaml
+      tlsSecretName: "test-kafka-operator"
+      jksPasswordName: "test-kafka-operator-pass"
       create: true
   cruiseControlConfig:
-    # increased after hitting OOMKilled - 2022-09-07
     resourceRequirements:
       limits:
         cpu: 3000m
         memory: 3000Mi
       requests:
-        cpu: 1000m
-        memory: 1000Mi
-    cruiseControlTaskSpec:
-      RetryDurationMinutes: 5
-    topicConfig:
-      partitions: 12
-      replicationFactor: 3
+        cpu: 500m
+        memory: 500Mi
     config: |
       # Copyright 2017 LinkedIn Corp. Licensed under the BSD 2-Clause License (the "License"). See License in the project root for license information.
       #
